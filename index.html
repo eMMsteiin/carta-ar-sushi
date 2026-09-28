@@ -271,7 +271,7 @@ function humanizeError(err) {
 }
 
 let video, controller, inputWidth, inputHeight;
-let renderer, scene, camera3, anchor, pivot, plane, planeMat;
+let renderer, scene, camera3, anchor, pivot, standRoot, plane, planeMat, glow, glowMat;
 let mindTargetDims = null;
 let lastResultWasAR = false;
 
@@ -359,9 +359,49 @@ function setupThreeScene() {
   pivot.scale.set(p, p, p);
   anchor.add(pivot);
 
-  planeMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+  // The photo stands upright above the drawing, like a hologram rising off
+  // the page, instead of lying flat/coplanar with the paper. "standRoot" is
+  // a child of `pivot` (not `anchor`) so it correctly inherits the marker's
+  // own tracked orientation — the paper's surface normal already points
+  // roughly at the camera, which is exactly why the original flat "sticker"
+  // version was visible at all; building the stand-up transform in world
+  // space instead of the marker's own local space threw that orientation
+  // away, which is why the plane ended up lying flat/edge-on.
+  //
+  // `pivot` itself carries a `p`-scale (see above) that turns "1 unit" in
+  // its local space into "the marker's full width" in world space — the
+  // same convention the original flat/coplanar version used for sizing the
+  // photo (e.g. width 0.9 = 90% of the marker's width). We keep that exact
+  // convention here: standRoot rotates about local X (turning the marker's
+  // in-plane "up", local Y, into "out of the paper"), with no extra scale
+  // of its own, so plane/glow sizes below stay in the same "fraction of
+  // marker size" units as before.
+  //
+  // A full 90° tilt stands the photo perfectly perpendicular to the paper —
+  // which looks right side-on, but collapses to an invisible hairline the
+  // moment the camera looks straight down at the page (exactly the common
+  // case: someone holding a phone over a letter on a table/in their hands).
+  // Real "AR photo card" effects lean the standing card back a bit, like a
+  // photo propped against something, so it stays legible across viewing
+  // angles instead of only from a steep side angle.
+  const STAND_TILT_DEG = 55; // 90 = perfectly upright, 0 = flat on the paper
+  standRoot = new THREE.Group();
+  standRoot.rotation.x = (STAND_TILT_DEG * Math.PI) / 180;
+  pivot.add(standRoot);
+
+  planeMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, side: THREE.DoubleSide });
   plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat);
-  pivot.add(plane);
+  standRoot.add(plane);
+
+  // Soft glow disc at the base, like a light pooling under the hologram.
+  // Lies flat on the paper, so it's a direct child of `pivot` (the marker's
+  // own flat plane) with no extra rotation needed.
+  glowMat = new THREE.MeshBasicMaterial({
+    color: 0xfff3e0, transparent: true, opacity: 0,
+    side: THREE.DoubleSide, depthWrite: false,
+  });
+  glow = new THREE.Mesh(new THREE.CircleGeometry(0.5, 32), glowMat);
+  pivot.add(glow);
 
   renderer.setAnimationLoop(() => renderer.render(scene, camera3));
 }
@@ -376,7 +416,13 @@ function setWorldMatrix(worldMatrix) {
   anchor.visible = true;
 }
 
-const PHOTO_WIDTH_RATIO = 1.5;
+// Expressed as a fraction of the marker's own real-world size (mindTargetDims
+// is in "pixels" but doubles as anchor-space units via pivot's scale), so
+// the photo scales sensibly whatever size the drawing itself is. Kept modest
+// since this is a *standing* plane now — its "height" extends away from the
+// paper along real depth, and at this scale it also has to fit inside the
+// camera's near/far planes without being foreshortened into a sliver.
+const PHOTO_WIDTH_RATIO = 0.55;
 function loadTexture(url) {
   const loader = new THREE.TextureLoader();
   return new Promise((resolve, reject) => {
@@ -389,11 +435,34 @@ function loadTexture(url) {
 async function showPhotoOnPlane(item) {
   const tex = await loadTexture(item.file);
   planeMat.map = tex;
-  planeMat.opacity = 1;
   planeMat.needsUpdate = true;
+
   const aspect = tex.image.width / tex.image.height;
   const w = PHOTO_WIDTH_RATIO;
-  plane.scale.set(w, w / aspect, 1);
+  const h = w / aspect;
+  plane.scale.set(w, h, 1);
+  // Lift the plane so its bottom edge sits on the paper instead of its
+  // center — it should rise up out of the drawing, not be bisected by it.
+  plane.position.set(0, h / 2, 0);
+  glow.scale.set(w * 1.15, h * 1.15, 1);
+
+  // Fade both in together for a soft "materializing" hologram feel rather
+  // than popping in instantly.
+  await fadeIn([planeMat, glowMat], [1, 0.55], 450);
+}
+
+function fadeIn(mats, targets, durationMs) {
+  const starts = mats.map((m) => m.opacity);
+  const t0 = performance.now();
+  return new Promise((resolve) => {
+    function step(now) {
+      const t = Math.min(1, (now - t0) / durationMs);
+      mats.forEach((m, i) => { m.opacity = starts[i] + (targets[i] - starts[i]) * t; });
+      if (t < 1) requestAnimationFrame(step);
+      else resolve();
+    }
+    requestAnimationFrame(step);
+  });
 }
 
 // Freeze the current video frame into a canvas for detection + display.
