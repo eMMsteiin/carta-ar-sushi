@@ -301,31 +301,21 @@ async function initCamera() {
   window.addEventListener("resize", () => applyCoverTransform(video, inputWidth, inputHeight));
 
   // Prepare (but don't start) the MindAR controller + three.js scene now,
-  // so detection can run instantly once the user captures a frame. The
-  // onUpdate callback only matters once continuous tracking is running
-  // (after the first successful manual capture) — see startLiveTracking().
+  // so detection can run instantly once the user captures a frame.
+  //
+  // We deliberately don't use MindAR's built-in continuous tracking
+  // (controller.processVideo + onUpdate) here: testing showed its internal
+  // tracker reliably fails to (re)acquire the target after a handoff from a
+  // one-shot detection — the hologram would end up stuck to the screen
+  // instead of the drawing, which matches what happened on a real phone
+  // too, not just in this sandbox. Instead, startLiveTracking() below runs
+  // our own loop that repeatedly calls the same robust detect()/match()
+  // pair used for the initial capture (tryDetect) directly on live video
+  // frames, a few times a second. It's not as buttery smooth as true
+  // per-frame tracking, but it's the method that has actually proven
+  // reliable, both here and for the initial capture.
   const { Controller } = window.MINDAR.IMAGE;
-  controller = new Controller({
-    inputWidth, inputHeight, maxTrack: 1,
-    onUpdate: (data) => {
-      if (!isTracking) return;
-      if (data.type === "updateMatrix" && data.targetIndex === 0) {
-        if (data.worldMatrix) {
-          setWorldMatrix(data.worldMatrix);
-          lostFrameCount = 0;
-        } else {
-          // Target not found in this frame. Don't snap the hologram away on
-          // a single dropped frame (normal jitter) — only hide it after a
-          // short run of consecutive misses, so brief motion blur or a
-          // finger crossing the drawing doesn't make it flicker constantly.
-          lostFrameCount++;
-          if (lostFrameCount > LOST_FRAMES_TO_HIDE) {
-            anchor.visible = false;
-          }
-        }
-      }
-    },
-  });
+  controller = new Controller({ inputWidth, inputHeight, maxTrack: 1, onUpdate: () => {} });
   const mindBuffer = base64ToArrayBuffer(window.__SUSHI_MIND_B64__);
   const targets = controller.addImageTargetsFromBuffer(mindBuffer);
   const dims = targets && targets.dimensions && targets.dimensions[0];
@@ -546,24 +536,59 @@ function stopCameraStream() {
   if (stream) stream.getTracks().forEach((t) => t.stop());
 }
 
-// Hand off from the one-shot still-frame detection to MindAR's normal
-// continuous tracking loop, so the hologram keeps following the drawing
-// live as the phone moves around it (front/side/back angles), instead of
-// staying locked to the single captured frame. The initial manual capture
-// is what makes the *first* detection reliable; once it succeeds, ordinary
-// live tracking tends to keep up fine because it only has to track motion
-// frame-to-frame from a known-good starting point, rather than find the
-// target cold.
+// Hand off from the one-shot still-frame detection to our own continuous
+// re-detection loop (see the note above initCamera for why this is used
+// instead of MindAR's built-in processVideo), so the hologram keeps
+// following the drawing live as the phone moves around it, instead of
+// staying locked to the single captured frame.
+//
+// Each tick grabs the current video frame and runs the same detect()+match()
+// used for the initial capture, but with just 1 attempt (not the 6 used for
+// the harder cold-start case) since here we're re-detecting a target we
+// just saw a moment ago — speed matters more than exhausting every retry.
+const LIVE_DETECT_INTERVAL_MS = 280; // a few times a second
+let liveTrackTimer = null;
+let liveTrackBusy = false;
+
 function startLiveTracking() {
   isTracking = true;
   lostFrameCount = 0;
-  controller.processVideo(video);
+  if (liveTrackTimer) clearInterval(liveTrackTimer);
+  liveTrackTimer = setInterval(liveTrackTick, LIVE_DETECT_INTERVAL_MS);
 }
 
 function stopLiveTracking() {
   isTracking = false;
-  if (controller && controller.stopProcessVideo) {
-    controller.stopProcessVideo();
+  if (liveTrackTimer) {
+    clearInterval(liveTrackTimer);
+    liveTrackTimer = null;
+  }
+}
+
+async function liveTrackTick() {
+  if (!isTracking || liveTrackBusy) return;
+  if (!video || video.readyState < 2) return; // not enough data yet
+  liveTrackBusy = true;
+  try {
+    const canvas = captureFrame();
+    const modelViewTransform = await tryDetect(canvas, 1);
+    if (modelViewTransform) {
+      const worldMatrix = toWorldMatrix(modelViewTransform, 0);
+      setWorldMatrix(worldMatrix);
+      lostFrameCount = 0;
+    } else {
+      // Don't hide on a single missed tick (motion blur, brief occlusion) —
+      // only once several in a row have failed does it look intentional
+      // rather than flickery.
+      lostFrameCount++;
+      if (lostFrameCount > LOST_FRAMES_TO_HIDE && anchor) {
+        anchor.visible = false;
+      }
+    }
+  } catch (e) {
+    console.error("Erro no tracking ao vivo", e);
+  } finally {
+    liveTrackBusy = false;
   }
 }
 
