@@ -274,6 +274,9 @@ let video, controller, inputWidth, inputHeight;
 let renderer, scene, camera3, anchor, pivot, standRoot, plane, planeMat, glow, glowMat;
 let mindTargetDims = null;
 let lastResultWasAR = false;
+let isTracking = false; // true once continuous live tracking has taken over after the initial capture
+let lostFrameCount = 0;
+const LOST_FRAMES_TO_HIDE = 5; // brief dropouts are normal; only hide after a real loss of tracking
 
 async function initCamera() {
   video = document.createElement("video");
@@ -298,9 +301,31 @@ async function initCamera() {
   window.addEventListener("resize", () => applyCoverTransform(video, inputWidth, inputHeight));
 
   // Prepare (but don't start) the MindAR controller + three.js scene now,
-  // so detection can run instantly once the user captures a frame.
+  // so detection can run instantly once the user captures a frame. The
+  // onUpdate callback only matters once continuous tracking is running
+  // (after the first successful manual capture) — see startLiveTracking().
   const { Controller } = window.MINDAR.IMAGE;
-  controller = new Controller({ inputWidth, inputHeight, maxTrack: 1, onUpdate: () => {} });
+  controller = new Controller({
+    inputWidth, inputHeight, maxTrack: 1,
+    onUpdate: (data) => {
+      if (!isTracking) return;
+      if (data.type === "updateMatrix" && data.targetIndex === 0) {
+        if (data.worldMatrix) {
+          setWorldMatrix(data.worldMatrix);
+          lostFrameCount = 0;
+        } else {
+          // Target not found in this frame. Don't snap the hologram away on
+          // a single dropped frame (normal jitter) — only hide it after a
+          // short run of consecutive misses, so brief motion blur or a
+          // finger crossing the drawing doesn't make it flicker constantly.
+          lostFrameCount++;
+          if (lostFrameCount > LOST_FRAMES_TO_HIDE) {
+            anchor.visible = false;
+          }
+        }
+      }
+    },
+  });
   const mindBuffer = base64ToArrayBuffer(window.__SUSHI_MIND_B64__);
   const targets = controller.addImageTargetsFromBuffer(mindBuffer);
   const dims = targets && targets.dimensions && targets.dimensions[0];
@@ -503,8 +528,9 @@ function toWorldMatrix(modelViewTransform, targetIndex) {
 }
 
 function freezeBackground(canvas) {
-  // Replace the live video with a still image of the captured frame,
-  // so the AR overlay appears locked onto that exact moment.
+  // Used only for the no-detection fallback path, where there's no live
+  // tracking to show — freezing the captured frame there still looks more
+  // intentional than an abrupt cut back to a blank/dark screen.
   video.pause();
   video.style.display = "none";
   const img = document.createElement("img");
@@ -518,6 +544,27 @@ function freezeBackground(canvas) {
 function stopCameraStream() {
   const stream = video.srcObject;
   if (stream) stream.getTracks().forEach((t) => t.stop());
+}
+
+// Hand off from the one-shot still-frame detection to MindAR's normal
+// continuous tracking loop, so the hologram keeps following the drawing
+// live as the phone moves around it (front/side/back angles), instead of
+// staying locked to the single captured frame. The initial manual capture
+// is what makes the *first* detection reliable; once it succeeds, ordinary
+// live tracking tends to keep up fine because it only has to track motion
+// frame-to-frame from a known-good starting point, rather than find the
+// target cold.
+function startLiveTracking() {
+  isTracking = true;
+  lostFrameCount = 0;
+  controller.processVideo(video);
+}
+
+function stopLiveTracking() {
+  isTracking = false;
+  if (controller && controller.stopProcessVideo) {
+    controller.stopProcessVideo();
+  }
 }
 
 async function handleCapture() {
@@ -539,20 +586,24 @@ async function handleCapture() {
   }
 
   analyzing.classList.remove("visible");
-  freezeBackground(canvas);
-  stopCameraStream();
 
   const item = pickPhoto();
   lastResultWasAR = !!worldMatrix;
 
   if (worldMatrix) {
+    // Keep the camera live: this is what lets the hologram keep following
+    // the drawing as the phone moves, instead of being stuck to one frame.
     setupThreeScene();
     setWorldMatrix(worldMatrix);
     await showPhotoOnPlane(item);
+    startLiveTracking();
   } else {
     // Fallback: couldn't lock onto the drawing precisely, but we never
     // leave the person with nothing — show the photo centered and large
-    // over the captured frame instead of a failure state.
+    // over the captured frame instead of a failure state. There's no
+    // tracked position to keep live here, so freeze the frame instead.
+    freezeBackground(canvas);
+    stopCameraStream();
     showFallbackPhoto(item);
   }
 
@@ -578,6 +629,8 @@ function showFallbackPhoto(item) {
 }
 
 function resetToCapture() {
+  stopLiveTracking();
+
   // Remove any previous result (three.js canvas, frozen frame, fallback photo)
   const oldCanvas = container.querySelector("canvas.ar-canvas");
   if (oldCanvas) oldCanvas.remove();
@@ -591,16 +644,30 @@ function resetToCapture() {
   actionBar.classList.remove("visible");
   video.style.display = "";
 
-  // Re-acquire the camera stream since we stopped it after capture.
+  const backToCaptureUi = () => {
+    captureHint.classList.remove("hidden");
+    guideFrame.classList.remove("hidden");
+    captureBtn.classList.remove("hidden");
+  };
+
+  // The camera stream is only ever stopped on the no-detection fallback
+  // path (see handleCapture) — in the normal AR path the camera stayed
+  // live the whole time for continuous tracking, so there's nothing to
+  // re-acquire.
+  const stream = video.srcObject;
+  const streamIsLive = stream && stream.getVideoTracks().some((t) => t.readyState === "live");
+  if (streamIsLive) {
+    backToCaptureUi();
+    return;
+  }
+
   navigator.mediaDevices.getUserMedia({
     audio: false,
     video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } },
   }).then((stream) => {
     video.srcObject = stream;
     video.play();
-    captureHint.classList.remove("hidden");
-    guideFrame.classList.remove("hidden");
-    captureBtn.classList.remove("hidden");
+    backToCaptureUi();
   });
 }
 
