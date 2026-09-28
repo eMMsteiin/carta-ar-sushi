@@ -1,0 +1,5 @@
+build_screenshot*.png
+test_capture*.py
+test_debug_start.py
+test_dom.py
+__pycache__/

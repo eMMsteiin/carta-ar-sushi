@@ -15,12 +15,15 @@
     position: fixed; inset: 0; width: 100%; height: 100%;
   }
   #scene-container video,
-  #scene-container canvas.ar-canvas {
+  #scene-container canvas.ar-canvas,
+  #scene-container img.frozen-frame {
     position: absolute;
     top: 50%; left: 50%;
     transform: translate(-50%, -50%);
+    object-fit: cover;
   }
 
+  /* ---------- Intro overlay ---------- */
   #overlay {
     position: fixed; inset: 0;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -28,60 +31,100 @@
     box-sizing: border-box;
     background: radial-gradient(circle at 50% 30%, #1a1a1a 0%, #000 100%);
     color: #fdf6ee;
-    z-index: 20;
+    z-index: 30;
     transition: opacity 0.5s ease;
   }
   #overlay.hidden { opacity: 0; pointer-events: none; }
-
-  #overlay h1 {
-    font-size: 22px;
-    font-weight: 600;
-    margin: 0 0 12px;
-    letter-spacing: 0.3px;
-  }
-  #overlay p {
-    font-size: 15px;
-    line-height: 1.5;
-    color: #cfc4b6;
-    margin: 0 0 28px;
-    max-width: 320px;
-  }
+  #overlay h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; letter-spacing: 0.3px; }
+  #overlay p { font-size: 15px; line-height: 1.5; color: #cfc4b6; margin: 0 0 28px; max-width: 320px; }
   #start-btn {
     background: linear-gradient(135deg, #ff8a3d, #ff5f6d);
-    color: white;
-    border: none;
-    border-radius: 999px;
-    padding: 16px 36px;
-    font-size: 16px;
-    font-weight: 600;
+    color: white; border: none; border-radius: 999px;
+    padding: 16px 36px; font-size: 16px; font-weight: 600;
     box-shadow: 0 8px 24px rgba(255, 95, 109, 0.35);
     cursor: pointer;
   }
   #start-btn:active { transform: scale(0.97); }
+  #error-box { display: none; margin-top: 20px; font-size: 13px; color: #ff9c9c; max-width: 300px; }
 
-  #error-box {
-    display: none;
-    margin-top: 20px;
-    font-size: 13px;
-    color: #ff9c9c;
-    max-width: 300px;
+  /* ---------- Capture guide ---------- */
+  #guide-frame {
+    position: fixed;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(78vw, 78vh);
+    height: min(78vw, 78vh);
+    border: 3px solid rgba(255,255,255,0.85);
+    border-radius: 24px;
+    box-shadow: 0 0 0 9999px rgba(0,0,0,0.45);
+    z-index: 12;
+    pointer-events: none;
+    transition: opacity 0.3s ease, border-color 0.3s ease;
+  }
+  #guide-frame.hidden { opacity: 0; }
+  #guide-frame::before,
+  #guide-frame::after {
+    content: "";
+    position: absolute;
+    inset: -3px;
+    border-radius: 24px;
   }
 
-  #hint {
+  #capture-hint {
     position: fixed;
     top: env(safe-area-inset-top, 0px);
     left: 0; right: 0;
-    padding: 14px 20px 10px;
+    padding: 16px 24px 10px;
     text-align: center;
     color: #fff;
     font-size: 14px;
-    background: linear-gradient(180deg, rgba(0,0,0,0.65), rgba(0,0,0,0));
-    z-index: 10;
-    transition: opacity 0.4s ease;
-    pointer-events: none;
+    line-height: 1.4;
+    background: linear-gradient(180deg, rgba(0,0,0,0.7), rgba(0,0,0,0));
+    z-index: 13;
+    transition: opacity 0.3s ease;
   }
-  #hint.hidden { opacity: 0; }
+  #capture-hint.hidden { opacity: 0; pointer-events: none; }
 
+  #capture-btn {
+    position: fixed;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 32px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 14;
+    width: 72px; height: 72px;
+    border-radius: 999px;
+    background: #fff;
+    border: 4px solid rgba(255,255,255,0.5);
+    box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+    transition: opacity 0.3s ease, transform 0.15s ease;
+  }
+  #capture-btn:active { transform: translateX(-50%) scale(0.9); }
+  #capture-btn.hidden { opacity: 0; pointer-events: none; }
+
+  /* ---------- Analyzing state ---------- */
+  #analyzing {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 16;
+    color: #fff;
+    background: rgba(0,0,0,0.35);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  #analyzing.visible { opacity: 1; pointer-events: auto; }
+  .spinner {
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 3px solid rgba(255,255,255,0.25);
+    border-top-color: #ff8a3d;
+    animation: spin 0.8s linear infinite;
+    margin-bottom: 14px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #analyzing span { font-size: 14px; color: #eee; }
+
+  /* ---------- Result ---------- */
   #caption {
     position: fixed;
     left: 0; right: 0;
@@ -99,37 +142,55 @@
   }
   #caption.visible { opacity: 1; }
 
-  #reload-btn {
+  #action-bar {
     position: fixed;
-    right: 16px;
+    right: 0; left: 0;
     bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
     z-index: 15;
+    display: flex;
+    justify-content: center;
+    gap: 10px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  #action-bar.visible { opacity: 1; pointer-events: auto; }
+  .pill-btn {
     background: rgba(255,255,255,0.14);
     backdrop-filter: blur(6px);
     color: #fff;
     border: 1px solid rgba(255,255,255,0.25);
     border-radius: 999px;
-    padding: 10px 16px;
+    padding: 10px 18px;
     font-size: 13px;
-    opacity: 0;
-    transition: opacity 0.4s ease;
   }
-  #reload-btn.visible { opacity: 1; }
 </style>
 </head>
 <body>
 
 <div id="overlay">
   <h1>Para minha madame 🍣</h1>
-  <p>Aponte a câmera para o sushi desenhado atrás da carta.</p>
+  <p>Enquadre o sushi desenhado na carta dentro do quadro e toque no botão para capturar.</p>
   <button id="start-btn">Abrir a câmera</button>
   <div id="error-box"></div>
 </div>
 
-<div id="hint">Procurando o símbolo...</div>
 <div id="scene-container"></div>
+
+<div id="capture-hint">Alinhe o sushi dentro do quadro</div>
+<div id="guide-frame"></div>
+<button id="capture-btn" aria-label="Capturar"></button>
+
+<div id="analyzing">
+  <div class="spinner"></div>
+  <span>Procurando o sushi...</span>
+</div>
+
 <div id="caption"></div>
-<button id="reload-btn">Trocar foto</button>
+<div id="action-bar">
+  <button class="pill-btn" id="retry-btn">Tentar de novo</button>
+  <button class="pill-btn" id="reload-btn">Trocar foto</button>
+</div>
 
 <script src="assets/vendor/three.min.js"></script>
 <script src="assets/target/sushi-mind-data.js"></script>
@@ -158,10 +219,15 @@ const PHOTOS = [
 const overlay = document.getElementById("overlay");
 const startBtn = document.getElementById("start-btn");
 const errorBox = document.getElementById("error-box");
-const hint = document.getElementById("hint");
-const caption = document.getElementById("caption");
-const reloadBtn = document.getElementById("reload-btn");
 const container = document.getElementById("scene-container");
+const guideFrame = document.getElementById("guide-frame");
+const captureHint = document.getElementById("capture-hint");
+const captureBtn = document.getElementById("capture-btn");
+const analyzing = document.getElementById("analyzing");
+const caption = document.getElementById("caption");
+const actionBar = document.getElementById("action-bar");
+const retryBtn = document.getElementById("retry-btn");
+const reloadBtn = document.getElementById("reload-btn");
 
 let lastPhotoIndex = -1;
 function pickPhoto() {
@@ -178,9 +244,12 @@ async function start() {
   errorBox.style.display = "none";
 
   try {
-    await initAR();
+    await initCamera();
     overlay.classList.add("hidden");
     setTimeout(() => { overlay.style.display = "none"; }, 550);
+    captureHint.classList.remove("hidden");
+    guideFrame.classList.remove("hidden");
+    captureBtn.classList.remove("hidden");
   } catch (err) {
     console.error(err);
     errorBox.style.display = "block";
@@ -201,8 +270,13 @@ function humanizeError(err) {
   return "Algo deu errado ao abrir a câmera: " + msg;
 }
 
-async function initAR() {
-  const video = document.createElement("video");
+let video, controller, inputWidth, inputHeight;
+let renderer, scene, camera3, anchor, pivot, plane, planeMat;
+let mindTargetDims = null;
+let lastResultWasAR = false;
+
+async function initCamera() {
+  video = document.createElement("video");
   video.setAttribute("autoplay", "");
   video.setAttribute("muted", "");
   video.setAttribute("playsinline", "");
@@ -211,154 +285,279 @@ async function initAR() {
 
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: false,
-    video: { facingMode: { ideal: "environment" } },
+    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } },
   });
   video.srcObject = stream;
   await new Promise((resolve) => {
     video.onloadedmetadata = () => { video.play(); resolve(); };
   });
 
-  const inputWidth = video.videoWidth;
-  const inputHeight = video.videoHeight;
+  inputWidth = video.videoWidth;
+  inputHeight = video.videoHeight;
+  applyCoverTransform(video, inputWidth, inputHeight);
+  window.addEventListener("resize", () => applyCoverTransform(video, inputWidth, inputHeight));
 
-  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  // Prepare (but don't start) the MindAR controller + three.js scene now,
+  // so detection can run instantly once the user captures a frame.
+  const { Controller } = window.MINDAR.IMAGE;
+  controller = new Controller({ inputWidth, inputHeight, maxTrack: 1, onUpdate: () => {} });
+  const mindBuffer = base64ToArrayBuffer(window.__SUSHI_MIND_B64__);
+  const targets = controller.addImageTargetsFromBuffer(mindBuffer);
+  const dims = targets && targets.dimensions && targets.dimensions[0];
+  mindTargetDims = dims ? { width: dims[0], height: dims[1] } : { width: 500, height: 500 };
+  controller.dummyRun(video);
+}
+
+function applyCoverTransform(el, w, h) {
+  const screenW = window.innerWidth;
+  const screenH = window.innerHeight;
+  const scale = Math.max(screenW / w, screenH / h);
+  el.style.width = w + "px";
+  el.style.height = h + "px";
+  el.style.transform = `translate(-50%, -50%) scale(${scale})`;
+}
+
+function setupThreeScene() {
+  renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setSize(inputWidth, inputHeight, false);
   renderer.domElement.classList.add("ar-canvas");
   container.appendChild(renderer.domElement);
+  applyCoverTransform(renderer.domElement, inputWidth, inputHeight);
+  window.addEventListener("resize", () => applyCoverTransform(renderer.domElement, inputWidth, inputHeight));
 
-  const scene = new THREE.Scene();
-  const camera = new THREE.Camera();
-  scene.add(camera);
+  scene = new THREE.Scene();
+  camera3 = new THREE.PerspectiveCamera();
+  scene.add(camera3);
+  // Derive a standard perspective camera (fov/near/far) from MindAR's raw
+  // projection matrix, exactly like the official three.js wrapper does,
+  // instead of assigning the raw matrix directly to a generic THREE.Camera
+  // (which only works if the canvas is pixel-for-pixel inputWidth x
+  // inputHeight with no extra CSS scaling involved in the math).
+  const projMat = controller.getProjectionMatrix();
+  camera3.fov = 2 * Math.atan(1 / projMat[5]) * 180 / Math.PI;
+  camera3.near = projMat[14] / (projMat[10] - 1);
+  camera3.far = projMat[14] / (projMat[10] + 1);
+  camera3.aspect = inputWidth / inputHeight;
+  camera3.updateProjectionMatrix();
 
-  const anchor = new THREE.Group();
-  anchor.visible = false;
+  anchor = new THREE.Group();
   anchor.matrixAutoUpdate = false;
   scene.add(anchor);
 
-  // MindAR's local marker space has its origin at the top-left corner of
-  // the target image, spanning x:[0, targetWidth/targetHeight], y:[0, 1].
-  // Our sushi target is square (1:1), so the marker rect is (0,0)-(1,1)
-  // and its center is (0.5, 0.5). We add a pivot there so the photo plane
-  // can be scaled/centered normally.
-  const MARKER_ASPECT = 1; // targetWidth / targetHeight of sushi-source.png
-  const pivot = new THREE.Group();
-  pivot.position.set(MARKER_ASPECT / 2, 0.5, 0);
+  // MindAR's raw worldMatrix places things in the *target image's own
+  // pixel space* (e.g. 0..500 for our 500x500 sushi drawing), not a
+  // normalized 0..1 marker space. The official three.js wrapper corrects
+  // for this with a fixed "postMatrix" per target: position at
+  // (p/2, p/2 + (m-p)/2, 0) and scale (p, p, p), where [p, m] are the
+  // target's [width, height] in pixels. We replicate that exactly via
+  // this pivot group instead of guessing our own normalized convention.
+  const p = mindTargetDims.width;
+  const m = mindTargetDims.height;
+  pivot = new THREE.Group();
+  pivot.position.set(p / 2, p / 2 + (m - p) / 2, 0);
+  pivot.scale.set(p, p, p);
   anchor.add(pivot);
 
-  const textureLoader = new THREE.TextureLoader();
-  const planeGeom = new THREE.PlaneGeometry(1, 1);
-  const planeMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
-  const plane = new THREE.Mesh(planeGeom, planeMat);
+  planeMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+  plane = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), planeMat);
   pivot.add(plane);
 
-  function loadTexture(url) {
-    return new Promise((resolve, reject) => {
-      textureLoader.load(url, (tex) => {
-        tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
-        resolve(tex);
-      }, undefined, reject);
-    });
-  }
+  renderer.setAnimationLoop(() => renderer.render(scene, camera3));
+}
 
-  // Photo width relative to the marker's own width (1 unit = sushi drawing width).
-  // >1 makes the photo appear larger than the drawing itself.
-  const PHOTO_WIDTH_RATIO = 1.5;
+function setWorldMatrix(worldMatrix) {
+  anchor.matrix.set(
+    worldMatrix[0], worldMatrix[4], worldMatrix[8], worldMatrix[12],
+    worldMatrix[1], worldMatrix[5], worldMatrix[9], worldMatrix[13],
+    worldMatrix[2], worldMatrix[6], worldMatrix[10], worldMatrix[14],
+    worldMatrix[3], worldMatrix[7], worldMatrix[11], worldMatrix[15]
+  );
+  anchor.visible = true;
+}
 
-  function fitPlaneToTexture(tex) {
-    const imgW = tex.image.width;
-    const imgH = tex.image.height;
-    const aspect = imgW / imgH;
-    const w = PHOTO_WIDTH_RATIO;
-    const h = w / aspect;
-    plane.scale.set(w, h, 1);
-  }
-
-  async function showRandomPhoto() {
-    const item = pickPhoto();
-    try {
-      const tex = await loadTexture(item.file);
-      planeMat.map = tex;
-      planeMat.opacity = 1;
-      planeMat.needsUpdate = true;
-      fitPlaneToTexture(tex);
-      caption.textContent = item.caption || "";
-      caption.classList.toggle("visible", !!item.caption);
-    } catch (e) {
-      console.error("Falha ao carregar foto", e);
-    }
-  }
-
-  // MindAR controller
-  const { Controller } = window.MINDAR.IMAGE;
-  const controller = new Controller({
-    inputWidth,
-    inputHeight,
-    maxTrack: 1,
-    onUpdate: (data) => {
-      if (data.type === "updateMatrix") {
-        const { targetIndex, worldMatrix } = data;
-        if (worldMatrix == null) {
-          if (anchor.visible) {
-            anchor.visible = false;
-            hint.classList.remove("hidden");
-            caption.classList.remove("visible");
-          }
-          return;
-        }
-        if (!anchor.visible) {
-          anchor.visible = true;
-          hint.classList.add("hidden");
-          reloadBtn.classList.add("visible");
-          showRandomPhoto();
-        }
-        anchor.matrix.set(
-          worldMatrix[0], worldMatrix[4], worldMatrix[8], worldMatrix[12],
-          worldMatrix[1], worldMatrix[5], worldMatrix[9], worldMatrix[13],
-          worldMatrix[2], worldMatrix[6], worldMatrix[10], worldMatrix[14],
-          worldMatrix[3], worldMatrix[7], worldMatrix[11], worldMatrix[15]
-        );
-      }
-    },
-  });
-
-  const mindBuffer = base64ToArrayBuffer(window.__SUSHI_MIND_B64__);
-  controller.addImageTargetsFromBuffer(mindBuffer);
-
-  const projMat = controller.getProjectionMatrix();
-  camera.projectionMatrix.fromArray(projMat);
-
-  // Both the raw video element and the AR canvas are rendered at the
-  // native camera resolution (inputWidth x inputHeight) and then scaled
-  // together via CSS to "cover" the viewport, exactly like object-fit:cover
-  // would, but keeping the two perfectly superimposed pixel-for-pixel —
-  // which MindAR's projection matrix assumes.
-  function applyCoverTransform(el) {
-    const screenW = window.innerWidth;
-    const screenH = window.innerHeight;
-    const scale = Math.max(screenW / inputWidth, screenH / inputHeight);
-    el.style.width = inputWidth + "px";
-    el.style.height = inputHeight + "px";
-    el.style.transform = `translate(-50%, -50%) scale(${scale})`;
-  }
-  function resize() {
-    applyCoverTransform(video);
-    applyCoverTransform(renderer.domElement);
-  }
-  window.addEventListener("resize", resize);
-  resize();
-
-  renderer.setAnimationLoop(() => {
-    renderer.render(scene, camera);
-  });
-
-  controller.dummyRun(video);
-  controller.processVideo(video);
-
-  reloadBtn.addEventListener("click", () => {
-    if (anchor.visible) showRandomPhoto();
+const PHOTO_WIDTH_RATIO = 1.5;
+function loadTexture(url) {
+  const loader = new THREE.TextureLoader();
+  return new Promise((resolve, reject) => {
+    loader.load(url, (tex) => {
+      tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+      resolve(tex);
+    }, undefined, reject);
   });
 }
+async function showPhotoOnPlane(item) {
+  const tex = await loadTexture(item.file);
+  planeMat.map = tex;
+  planeMat.opacity = 1;
+  planeMat.needsUpdate = true;
+  const aspect = tex.image.width / tex.image.height;
+  const w = PHOTO_WIDTH_RATIO;
+  plane.scale.set(w, w / aspect, 1);
+}
+
+// Freeze the current video frame into a canvas for detection + display.
+function captureFrame() {
+  const c = document.createElement("canvas");
+  c.width = inputWidth;
+  c.height = inputHeight;
+  const ctx = c.getContext("2d");
+  ctx.drawImage(video, 0, 0, inputWidth, inputHeight);
+  return c;
+}
+
+// Try to detect the target on a static frame. Since there's no real-time
+// pressure anymore, we can retry a few times (the detector has some
+// randomness/robustness variance frame to frame even on a still canvas
+// because of internal sampling), giving a much better hit rate than a
+// single live-video attempt.
+async function tryDetect(canvas, attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    const { featurePoints } = await controller.detect(canvas);
+    if (featurePoints && featurePoints.length > 0) {
+      const { modelViewTransform } = await controller.match(featurePoints, 0);
+      if (modelViewTransform) {
+        return modelViewTransform;
+      }
+    }
+    await new Promise((r) => setTimeout(r, 30));
+  }
+  return null;
+}
+
+// Convert MindAR's raw modelViewTransform (3x4, row-major nested array)
+// into the 4x4 column-major worldMatrix MindAR normally emits via onUpdate,
+// reusing the controller's own private conversion by calling it the same
+// way processVideo does internally (getWorldMatrix wraps _glModelViewMatrix).
+function toWorldMatrix(modelViewTransform, targetIndex) {
+  return controller.getWorldMatrix(modelViewTransform, targetIndex);
+}
+
+function freezeBackground(canvas) {
+  // Replace the live video with a still image of the captured frame,
+  // so the AR overlay appears locked onto that exact moment.
+  video.pause();
+  video.style.display = "none";
+  const img = document.createElement("img");
+  img.src = canvas.toDataURL("image/jpeg", 0.9);
+  img.className = "frozen-frame";
+  container.insertBefore(img, container.firstChild);
+  applyCoverTransform(img, inputWidth, inputHeight);
+  window.addEventListener("resize", () => applyCoverTransform(img, inputWidth, inputHeight));
+}
+
+function stopCameraStream() {
+  const stream = video.srcObject;
+  if (stream) stream.getTracks().forEach((t) => t.stop());
+}
+
+async function handleCapture() {
+  captureHint.classList.add("hidden");
+  guideFrame.classList.add("hidden");
+  captureBtn.classList.add("hidden");
+  analyzing.classList.add("visible");
+
+  const canvas = captureFrame();
+
+  let worldMatrix = null;
+  try {
+    const modelViewTransform = await tryDetect(canvas, 6);
+    if (modelViewTransform) {
+      worldMatrix = toWorldMatrix(modelViewTransform, 0);
+    }
+  } catch (e) {
+    console.error("Detecção falhou", e);
+  }
+
+  analyzing.classList.remove("visible");
+  freezeBackground(canvas);
+  stopCameraStream();
+
+  const item = pickPhoto();
+  lastResultWasAR = !!worldMatrix;
+
+  if (worldMatrix) {
+    setupThreeScene();
+    setWorldMatrix(worldMatrix);
+    await showPhotoOnPlane(item);
+  } else {
+    // Fallback: couldn't lock onto the drawing precisely, but we never
+    // leave the person with nothing — show the photo centered and large
+    // over the captured frame instead of a failure state.
+    showFallbackPhoto(item);
+  }
+
+  caption.textContent = item.caption || "";
+  caption.classList.toggle("visible", !!item.caption);
+  actionBar.classList.add("visible");
+}
+
+function showFallbackPhoto(item) {
+  const img = document.createElement("img");
+  img.src = item.file;
+  img.style.position = "fixed";
+  img.style.top = "50%";
+  img.style.left = "50%";
+  img.style.transform = "translate(-50%, -50%)";
+  img.style.maxWidth = "80vw";
+  img.style.maxHeight = "70vh";
+  img.style.borderRadius = "16px";
+  img.style.boxShadow = "0 12px 40px rgba(0,0,0,0.6)";
+  img.style.zIndex = "11";
+  img.className = "fallback-photo";
+  container.appendChild(img);
+}
+
+function resetToCapture() {
+  // Remove any previous result (three.js canvas, frozen frame, fallback photo)
+  const oldCanvas = container.querySelector("canvas.ar-canvas");
+  if (oldCanvas) oldCanvas.remove();
+  const oldFrozen = container.querySelector("img.frozen-frame");
+  if (oldFrozen) oldFrozen.remove();
+  const oldFallback = container.querySelector("img.fallback-photo");
+  if (oldFallback) oldFallback.remove();
+  if (renderer) { renderer.setAnimationLoop(null); renderer = null; }
+
+  caption.classList.remove("visible");
+  actionBar.classList.remove("visible");
+  video.style.display = "";
+
+  // Re-acquire the camera stream since we stopped it after capture.
+  navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 960 } },
+  }).then((stream) => {
+    video.srcObject = stream;
+    video.play();
+    captureHint.classList.remove("hidden");
+    guideFrame.classList.remove("hidden");
+    captureBtn.classList.remove("hidden");
+  });
+}
+
+// "Trocar foto": just swap in a different random photo without redoing the
+// capture/detection step. If the last result was AR-positioned, keep the
+// same locked anchor and only replace the texture on the existing plane.
+// If the last result was the fallback (no AR lock), just swap the fallback
+// image instead of asking the person to re-frame and capture again.
+async function swapPhoto() {
+  const item = pickPhoto();
+
+  if (lastResultWasAR && plane) {
+    await showPhotoOnPlane(item);
+  } else {
+    const oldFallback = container.querySelector("img.fallback-photo");
+    if (oldFallback) oldFallback.remove();
+    showFallbackPhoto(item);
+  }
+
+  caption.textContent = item.caption || "";
+  caption.classList.toggle("visible", !!item.caption);
+}
+
+captureBtn.addEventListener("click", handleCapture);
+retryBtn.addEventListener("click", resetToCapture);
+reloadBtn.addEventListener("click", swapPhoto);
 
 startBtn.addEventListener("click", start);
 </script>
