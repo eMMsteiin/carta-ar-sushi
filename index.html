@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>Nossa carta</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0a0a0a; overflow: hidden;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  #scene-container {
+    position: fixed; inset: 0; width: 100%; height: 100%;
+  }
+  #scene-container video,
+  #scene-container canvas.ar-canvas {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  #overlay {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 32px 24px;
+    box-sizing: border-box;
+    background: radial-gradient(circle at 50% 30%, #1a1a1a 0%, #000 100%);
+    color: #fdf6ee;
+    z-index: 20;
+    transition: opacity 0.5s ease;
+  }
+  #overlay.hidden { opacity: 0; pointer-events: none; }
+
+  #overlay h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0 0 12px;
+    letter-spacing: 0.3px;
+  }
+  #overlay p {
+    font-size: 15px;
+    line-height: 1.5;
+    color: #cfc4b6;
+    margin: 0 0 28px;
+    max-width: 320px;
+  }
+  #start-btn {
+    background: linear-gradient(135deg, #ff8a3d, #ff5f6d);
+    color: white;
+    border: none;
+    border-radius: 999px;
+    padding: 16px 36px;
+    font-size: 16px;
+    font-weight: 600;
+    box-shadow: 0 8px 24px rgba(255, 95, 109, 0.35);
+    cursor: pointer;
+  }
+  #start-btn:active { transform: scale(0.97); }
+
+  #error-box {
+    display: none;
+    margin-top: 20px;
+    font-size: 13px;
+    color: #ff9c9c;
+    max-width: 300px;
+  }
+
+  #hint {
+    position: fixed;
+    top: env(safe-area-inset-top, 0px);
+    left: 0; right: 0;
+    padding: 14px 20px 10px;
+    text-align: center;
+    color: #fff;
+    font-size: 14px;
+    background: linear-gradient(180deg, rgba(0,0,0,0.65), rgba(0,0,0,0));
+    z-index: 10;
+    transition: opacity 0.4s ease;
+    pointer-events: none;
+  }
+  #hint.hidden { opacity: 0; }
+
+  #caption {
+    position: fixed;
+    left: 0; right: 0;
+    bottom: env(safe-area-inset-bottom, 0px);
+    padding: 18px 24px 28px;
+    text-align: center;
+    color: #fff;
+    font-size: 16px;
+    font-weight: 500;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.7);
+    background: linear-gradient(0deg, rgba(0,0,0,0.55), rgba(0,0,0,0));
+    z-index: 10;
+    opacity: 0;
+    transition: opacity 0.5s ease;
+  }
+  #caption.visible { opacity: 1; }
+
+  #reload-btn {
+    position: fixed;
+    right: 16px;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
+    z-index: 15;
+    background: rgba(255,255,255,0.14);
+    backdrop-filter: blur(6px);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    border-radius: 999px;
+    padding: 10px 16px;
+    font-size: 13px;
+    opacity: 0;
+    transition: opacity 0.4s ease;
+  }
+  #reload-btn.visible { opacity: 1; }
+</style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>Para minha madame 🍣</h1>
+  <p>Aponte a câmera para o sushi desenhado atrás da carta.</p>
+  <button id="start-btn">Abrir a câmera</button>
+  <div id="error-box"></div>
+</div>
+
+<div id="hint">Procurando o símbolo...</div>
+<div id="scene-container"></div>
+<div id="caption"></div>
+<button id="reload-btn">Trocar foto</button>
+
+<script src="assets/vendor/three.min.js"></script>
+<script src="assets/target/sushi-mind-data.js"></script>
+<script type="module">
+import "./assets/mindar-image.prod.js";
+
+function base64ToArrayBuffer(base64) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+const PHOTOS = [
+  { file: "assets/photos/foto01.jpg", caption: "Você é minha madame para a vida!!" },
+  { file: "assets/photos/foto02.jpg", caption: "É um privilégio acordar ao seu lado, madame!!" },
+  { file: "assets/photos/foto03.jpg", caption: "Você me completa" },
+  { file: "assets/photos/foto04.jpg", caption: "Te amo mil milhões" },
+  { file: "assets/photos/foto05.jpg", caption: "Seus olhos são a minha paisagem favorita" },
+  { file: "assets/photos/foto06.jpg", caption: "Seu apoio é a minha maior motivação" },
+  { file: "assets/photos/foto07.jpg", caption: "Você é a minha maior benção!!" },
+  { file: "assets/photos/foto08.jpg", caption: "Você faz a palavra amor ganhar um significado diferente a cada dia" },
+  { file: "assets/photos/foto09.jpg", caption: "" },
+];
+
+const overlay = document.getElementById("overlay");
+const startBtn = document.getElementById("start-btn");
+const errorBox = document.getElementById("error-box");
+const hint = document.getElementById("hint");
+const caption = document.getElementById("caption");
+const reloadBtn = document.getElementById("reload-btn");
+const container = document.getElementById("scene-container");
+
+let lastPhotoIndex = -1;
+function pickPhoto() {
+  if (PHOTOS.length === 1) return PHOTOS[0];
+  let idx;
+  do { idx = Math.floor(Math.random() * PHOTOS.length); } while (idx === lastPhotoIndex);
+  lastPhotoIndex = idx;
+  return PHOTOS[idx];
+}
+
+async function start() {
+  startBtn.disabled = true;
+  startBtn.textContent = "Abrindo...";
+  errorBox.style.display = "none";
+
+  try {
+    await initAR();
+    overlay.classList.add("hidden");
+    setTimeout(() => { overlay.style.display = "none"; }, 550);
+  } catch (err) {
+    console.error(err);
+    errorBox.style.display = "block";
+    errorBox.textContent = humanizeError(err);
+    startBtn.disabled = false;
+    startBtn.textContent = "Tentar de novo";
+  }
+}
+
+function humanizeError(err) {
+  const msg = (err && err.message) || String(err);
+  if (msg.includes("Permission") || msg.includes("NotAllowed")) {
+    return "Precisamos da permissão da câmera. Verifique as configurações do navegador e tente de novo.";
+  }
+  if (msg.includes("NotFoundError")) {
+    return "Não encontrei uma câmera neste dispositivo.";
+  }
+  return "Algo deu errado ao abrir a câmera: " + msg;
+}
+
+async function initAR() {
+  const video = document.createElement("video");
+  video.setAttribute("autoplay", "");
+  video.setAttribute("muted", "");
+  video.setAttribute("playsinline", "");
+  video.muted = true;
+  container.appendChild(video);
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: false,
+    video: { facingMode: { ideal: "environment" } },
+  });
+  video.srcObject = stream;
+  await new Promise((resolve) => {
+    video.onloadedmetadata = () => { video.play(); resolve(); };
+  });
+
+  const inputWidth = video.videoWidth;
+  const inputHeight = video.videoHeight;
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(inputWidth, inputHeight, false);
+  renderer.domElement.classList.add("ar-canvas");
+  container.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.Camera();
+  scene.add(camera);
+
+  const anchor = new THREE.Group();
+  anchor.visible = false;
+  anchor.matrixAutoUpdate = false;
+  scene.add(anchor);
+
+  // MindAR's local marker space has its origin at the top-left corner of
+  // the target image, spanning x:[0, targetWidth/targetHeight], y:[0, 1].
+  // Our sushi target is square (1:1), so the marker rect is (0,0)-(1,1)
+  // and its center is (0.5, 0.5). We add a pivot there so the photo plane
+  // can be scaled/centered normally.
+  const MARKER_ASPECT = 1; // targetWidth / targetHeight of sushi-source.png
+  const pivot = new THREE.Group();
+  pivot.position.set(MARKER_ASPECT / 2, 0.5, 0);
+  anchor.add(pivot);
+
+  const textureLoader = new THREE.TextureLoader();
+  const planeGeom = new THREE.PlaneGeometry(1, 1);
+  const planeMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0 });
+  const plane = new THREE.Mesh(planeGeom, planeMat);
+  pivot.add(plane);
+
+  function loadTexture(url) {
+    return new Promise((resolve, reject) => {
+      textureLoader.load(url, (tex) => {
+        tex.colorSpace = THREE.SRGBColorSpace || THREE.sRGBEncoding;
+        resolve(tex);
+      }, undefined, reject);
+    });
+  }
+
+  // Photo width relative to the marker's own width (1 unit = sushi drawing width).
+  // >1 makes the photo appear larger than the drawing itself.
+  const PHOTO_WIDTH_RATIO = 1.5;
+
+  function fitPlaneToTexture(tex) {
+    const imgW = tex.image.width;
+    const imgH = tex.image.height;
+    const aspect = imgW / imgH;
+    const w = PHOTO_WIDTH_RATIO;
+    const h = w / aspect;
+    plane.scale.set(w, h, 1);
+  }
+
+  async function showRandomPhoto() {
+    const item = pickPhoto();
+    try {
+      const tex = await loadTexture(item.file);
+      planeMat.map = tex;
+      planeMat.opacity = 1;
+      planeMat.needsUpdate = true;
+      fitPlaneToTexture(tex);
+      caption.textContent = item.caption || "";
+      caption.classList.toggle("visible", !!item.caption);
+    } catch (e) {
+      console.error("Falha ao carregar foto", e);
+    }
+  }
+
+  // MindAR controller
+  const { Controller } = window.MINDAR.IMAGE;
+  const controller = new Controller({
+    inputWidth,
+    inputHeight,
+    maxTrack: 1,
+    onUpdate: (data) => {
+      if (data.type === "updateMatrix") {
+        const { targetIndex, worldMatrix } = data;
+        if (worldMatrix == null) {
+          if (anchor.visible) {
+            anchor.visible = false;
+            hint.classList.remove("hidden");
+            caption.classList.remove("visible");
+          }
+          return;
+        }
+        if (!anchor.visible) {
+          anchor.visible = true;
+          hint.classList.add("hidden");
+          reloadBtn.classList.add("visible");
+          showRandomPhoto();
+        }
+        anchor.matrix.set(
+          worldMatrix[0], worldMatrix[4], worldMatrix[8], worldMatrix[12],
+          worldMatrix[1], worldMatrix[5], worldMatrix[9], worldMatrix[13],
+          worldMatrix[2], worldMatrix[6], worldMatrix[10], worldMatrix[14],
+          worldMatrix[3], worldMatrix[7], worldMatrix[11], worldMatrix[15]
+        );
+      }
+    },
+  });
+
+  const mindBuffer = base64ToArrayBuffer(window.__SUSHI_MIND_B64__);
+  controller.addImageTargetsFromBuffer(mindBuffer);
+
+  const projMat = controller.getProjectionMatrix();
+  camera.projectionMatrix.fromArray(projMat);
+
+  // Both the raw video element and the AR canvas are rendered at the
+  // native camera resolution (inputWidth x inputHeight) and then scaled
+  // together via CSS to "cover" the viewport, exactly like object-fit:cover
+  // would, but keeping the two perfectly superimposed pixel-for-pixel —
+  // which MindAR's projection matrix assumes.
+  function applyCoverTransform(el) {
+    const screenW = window.innerWidth;
+    const screenH = window.innerHeight;
+    const scale = Math.max(screenW / inputWidth, screenH / inputHeight);
+    el.style.width = inputWidth + "px";
+    el.style.height = inputHeight + "px";
+    el.style.transform = `translate(-50%, -50%) scale(${scale})`;
+  }
+  function resize() {
+    applyCoverTransform(video);
+    applyCoverTransform(renderer.domElement);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  renderer.setAnimationLoop(() => {
+    renderer.render(scene, camera);
+  });
+
+  controller.dummyRun(video);
+  controller.processVideo(video);
+
+  reloadBtn.addEventListener("click", () => {
+    if (anchor.visible) showRandomPhoto();
+  });
+}
+
+startBtn.addEventListener("click", start);
+</script>
+</body>
+</html>
