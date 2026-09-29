@@ -170,7 +170,7 @@
 
 <div id="overlay">
   <h1>Para minha madame 🍣</h1>
-  <p>Enquadre o sushi desenhado na carta dentro do quadro e toque no botão para capturar.</p>
+  <p>Enquadre o sushi desenhado na carta dentro do quadro e toque no botão para capturar. Vamos pedir permissão para a câmera e para os sensores de movimento.</p>
   <button id="start-btn">Abrir a câmera</button>
   <div id="error-box"></div>
 </div>
@@ -244,6 +244,9 @@ async function start() {
   errorBox.style.display = "none";
 
   try {
+    // Must run inside this tap (iOS requires a user gesture for motion
+    // sensors). If it's denied we still work, just without the gyro assist.
+    await enableSensors();
     await initCamera();
     overlay.classList.add("hidden");
     setTimeout(() => { overlay.style.display = "none"; }, 550);
@@ -275,8 +278,109 @@ let renderer, scene, camera3, anchor, pivot, standRoot, plane, planeMat, glow, g
 let mindTargetDims = null;
 let lastResultWasAR = false;
 let isTracking = false; // true once continuous live tracking has taken over after the initial capture
-let lostFrameCount = 0;
-const LOST_FRAMES_TO_HIDE = 5; // brief dropouts are normal; only hide after a real loss of tracking
+
+// ---------------------------------------------------------------------------
+// Gyroscope + camera fusion ("world lock")
+//
+// The camera-based detection only runs a few times a second, so on its own
+// the photo would lag and jump when the phone moves. Games like Pokémon GO
+// keep the object nailed to the real world by combining the camera with the
+// phone's gyroscope: the gyro reports how the phone *rotated* at 60 Hz, and
+// the camera occasionally corrects where the object actually is.
+//
+// We do the same. Every detection gives the marker's pose in the camera's
+// frame. We convert it to an earth-aligned frame using the phone's
+// orientation at the instant that frame was captured (poseTarget). Each
+// rendered frame we convert it back using the phone's orientation *now*, so
+// pure rotations of the phone are followed instantly and smoothly, and the
+// photo stays put on the drawing, even when the drawing leaves the frame.
+// Moving the phone closer/farther/sideways (translation) can't be sensed by
+// the gyro, so that part still relies on the camera detections.
+// ---------------------------------------------------------------------------
+const DEG = Math.PI / 180;
+const _euler = new THREE.Euler();
+const _qScreen = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5)); // camera looks out the back, not the top
+const _qOrient = new THREE.Quaternion();
+const _zAxis = new THREE.Vector3(0, 0, 1);
+
+// Camera orientation (three.js convention: looks down -Z, +Y up) in the
+// earth frame, from the W3C deviceorientation angles. Same maths as three's
+// classic DeviceOrientationControls.
+function deviceQuat(alphaDeg, betaDeg, gammaDeg, screenAngleRad, out) {
+  _euler.set(betaDeg * DEG, alphaDeg * DEG, -gammaDeg * DEG, "YXZ");
+  out.setFromEuler(_euler);
+  out.multiply(_qScreen);
+  out.multiply(_qOrient.setFromAxisAngle(_zAxis, -screenAngleRad));
+  return out;
+}
+
+const deviceQ = new THREE.Quaternion();
+let sensorsEnabled = false; // permission granted / API available
+let orientationSeen = false; // at least one real (non-null) reading arrived
+
+function screenAngleRad() {
+  const a = (screen.orientation && typeof screen.orientation.angle === "number")
+    ? screen.orientation.angle
+    : (window.orientation || 0);
+  return a * DEG;
+}
+
+function onDeviceOrientation(e) {
+  if (e.alpha === null || e.beta === null || e.gamma === null) return;
+  deviceQuat(e.alpha, e.beta, e.gamma, screenAngleRad(), deviceQ);
+  if (!orientationSeen) {
+    orientationSeen = true;
+    // A pose stored before the gyro woke up used the "no gyro" frame; drop it
+    // so the very next detection re-establishes it consistently.
+    havePose = false;
+  }
+}
+
+function gyroActive() {
+  return sensorsEnabled && orientationSeen;
+}
+
+// Current camera orientation, or identity when there is no gyroscope (then
+// the fusion degrades gracefully to plain camera-only tracking).
+function currentCamQuat(out) {
+  if (gyroActive()) out.copy(deviceQ); else out.identity();
+  return out;
+}
+
+// iOS only delivers motion data after an explicit permission prompt, which
+// must be triggered from a tap — we call this straight from the start button.
+async function enableSensors() {
+  try {
+    if (typeof DeviceOrientationEvent === "undefined") return false;
+    if (typeof DeviceOrientationEvent.requestPermission === "function") {
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== "granted") return false;
+    }
+    window.addEventListener("deviceorientation", onDeviceOrientation, true);
+    sensorsEnabled = true;
+    return true;
+  } catch (err) {
+    console.warn("Sensores de movimento indisponíveis", err);
+    return false;
+  }
+}
+
+// Fused pose state. poseTarget* is the latest detection expressed in the
+// earth-aligned frame; poseCur* chases it (low-pass) so correction jumps from
+// a new detection are absorbed smoothly, without slowing down the gyro part.
+const _mDet = new THREE.Matrix4();
+const _mRot = new THREE.Matrix4();
+const _mCur = new THREE.Matrix4();
+const _qInv = new THREE.Quaternion();
+const _qNow = new THREE.Quaternion();
+const poseTarget = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(1, 1, 1) };
+const poseCur = { p: new THREE.Vector3(), q: new THREE.Quaternion(), s: new THREE.Vector3(1, 1, 1) };
+let havePose = false;
+let lastDetectAt = 0;
+let lastFrameAt = 0;
+const POSE_SMOOTH_TAU = 0.08; // seconds; time constant of the correction smoothing
+const HIDE_AFTER_MS_GYRO = 4000; // gyro keeps it in place for a while even if the drawing leaves view
+const HIDE_AFTER_MS_VISION = 1500; // camera-only: don't leave a stale photo hanging around
 
 async function initCamera() {
   video = document.createElement("video");
@@ -358,6 +462,7 @@ function setupThreeScene() {
 
   anchor = new THREE.Group();
   anchor.matrixAutoUpdate = false;
+  anchor.visible = false; // shown by renderFrame once a pose has been detected
   scene.add(anchor);
 
   // MindAR's raw worldMatrix places things in the *target image's own
@@ -418,17 +523,50 @@ function setupThreeScene() {
   glow = new THREE.Mesh(new THREE.CircleGeometry(0.5, 32), glowMat);
   pivot.add(glow);
 
-  renderer.setAnimationLoop(() => renderer.render(scene, camera3));
+  lastFrameAt = performance.now();
+  renderer.setAnimationLoop(renderFrame);
 }
 
-function setWorldMatrix(worldMatrix) {
-  anchor.matrix.set(
-    worldMatrix[0], worldMatrix[4], worldMatrix[8], worldMatrix[12],
-    worldMatrix[1], worldMatrix[5], worldMatrix[9], worldMatrix[13],
-    worldMatrix[2], worldMatrix[6], worldMatrix[10], worldMatrix[14],
-    worldMatrix[3], worldMatrix[7], worldMatrix[11], worldMatrix[15]
-  );
-  anchor.visible = true;
+// Register a fresh detection. `worldMatrix` is MindAR's marker pose in the
+// camera's frame; `qCap` is the phone's orientation at the moment the
+// analysed frame was captured (not when the result arrived — detection takes
+// a few hundred ms, and the phone keeps rotating meanwhile).
+function setDetectedPose(worldMatrix, qCap) {
+  _mDet.fromArray(worldMatrix);
+  _mRot.makeRotationFromQuaternion(qCap);
+  _mCur.multiplyMatrices(_mRot, _mDet); // camera frame -> earth-aligned frame
+  _mCur.decompose(poseTarget.p, poseTarget.q, poseTarget.s);
+  if (!havePose) {
+    poseCur.p.copy(poseTarget.p);
+    poseCur.q.copy(poseTarget.q);
+    poseCur.s.copy(poseTarget.s);
+    havePose = true;
+  }
+  lastDetectAt = performance.now();
+}
+
+// Runs every display frame: chase the latest detection, convert to the
+// camera frame using the phone's *current* orientation, and draw.
+function renderFrame() {
+  if (havePose && anchor) {
+    const now = performance.now();
+    const dt = Math.min(0.1, (now - lastFrameAt) / 1000);
+    lastFrameAt = now;
+    const a = 1 - Math.exp(-dt / POSE_SMOOTH_TAU);
+    poseCur.p.lerp(poseTarget.p, a);
+    poseCur.q.slerp(poseTarget.q, a);
+    poseCur.s.lerp(poseTarget.s, a);
+    _mCur.compose(poseCur.p, poseCur.q, poseCur.s);
+
+    currentCamQuat(_qNow);
+    _qInv.copy(_qNow).invert();
+    _mRot.makeRotationFromQuaternion(_qInv);
+    anchor.matrix.multiplyMatrices(_mRot, _mCur); // earth-aligned frame -> camera frame
+
+    const limit = gyroActive() ? HIDE_AFTER_MS_GYRO : HIDE_AFTER_MS_VISION;
+    anchor.visible = now - lastDetectAt < limit;
+  }
+  renderer.render(scene, camera3);
 }
 
 // Expressed as a fraction of the marker's own real-world size (mindTargetDims
@@ -538,57 +676,46 @@ function stopCameraStream() {
 
 // Hand off from the one-shot still-frame detection to our own continuous
 // re-detection loop (see the note above initCamera for why this is used
-// instead of MindAR's built-in processVideo), so the hologram keeps
-// following the drawing live as the phone moves around it, instead of
-// staying locked to the single captured frame.
+// instead of MindAR's built-in processVideo). It keeps correcting the
+// photo's position from the camera, while the gyroscope (see the fusion
+// section above) carries it smoothly between detections.
 //
-// Each tick grabs the current video frame and runs the same detect()+match()
-// used for the initial capture, but with just 1 attempt (not the 6 used for
-// the harder cold-start case) since here we're re-detecting a target we
-// just saw a moment ago — speed matters more than exhausting every retry.
-const LIVE_DETECT_INTERVAL_MS = 280; // a few times a second
-let liveTrackTimer = null;
-let liveTrackBusy = false;
+// Each iteration grabs the current video frame and runs the same
+// detect()+match() used for the initial capture, but with just 1 attempt
+// (not the 6 used for the harder cold-start case) since here we're
+// re-detecting a target we just saw a moment ago. It runs back-to-back
+// (as fast as the phone can manage) rather than on a fixed timer.
+let trackGen = 0; // bumped on stop so an in-flight loop knows to quit
 
 function startLiveTracking() {
   isTracking = true;
-  lostFrameCount = 0;
-  if (liveTrackTimer) clearInterval(liveTrackTimer);
-  liveTrackTimer = setInterval(liveTrackTick, LIVE_DETECT_INTERVAL_MS);
+  liveTrackLoop(++trackGen);
 }
 
 function stopLiveTracking() {
   isTracking = false;
-  if (liveTrackTimer) {
-    clearInterval(liveTrackTimer);
-    liveTrackTimer = null;
-  }
+  trackGen++;
 }
 
-async function liveTrackTick() {
-  if (!isTracking || liveTrackBusy) return;
-  if (!video || video.readyState < 2) return; // not enough data yet
-  liveTrackBusy = true;
-  try {
-    const canvas = captureFrame();
-    const modelViewTransform = await tryDetect(canvas, 1);
-    if (modelViewTransform) {
-      const worldMatrix = toWorldMatrix(modelViewTransform, 0);
-      setWorldMatrix(worldMatrix);
-      lostFrameCount = 0;
-    } else {
-      // Don't hide on a single missed tick (motion blur, brief occlusion) —
-      // only once several in a row have failed does it look intentional
-      // rather than flickery.
-      lostFrameCount++;
-      if (lostFrameCount > LOST_FRAMES_TO_HIDE && anchor) {
-        anchor.visible = false;
+async function liveTrackLoop(gen) {
+  const qCap = new THREE.Quaternion();
+  while (isTracking && gen === trackGen) {
+    if (video && video.readyState >= 2) {
+      try {
+        // Record the phone's orientation at the moment this frame is taken;
+        // detection takes a few hundred ms and the phone keeps moving.
+        currentCamQuat(qCap);
+        const canvas = captureFrame();
+        const modelViewTransform = await tryDetect(canvas, 1);
+        if (gen !== trackGen) return;
+        if (modelViewTransform) {
+          setDetectedPose(toWorldMatrix(modelViewTransform, 0), qCap);
+        }
+      } catch (e) {
+        console.error("Erro no tracking ao vivo", e);
       }
     }
-  } catch (e) {
-    console.error("Erro no tracking ao vivo", e);
-  } finally {
-    liveTrackBusy = false;
+    await new Promise((r) => setTimeout(r, 30));
   }
 }
 
@@ -598,6 +725,8 @@ async function handleCapture() {
   captureBtn.classList.add("hidden");
   analyzing.classList.add("visible");
 
+  const qCap = new THREE.Quaternion();
+  currentCamQuat(qCap); // phone orientation at the instant of the captured frame
   const canvas = captureFrame();
 
   let worldMatrix = null;
@@ -619,7 +748,7 @@ async function handleCapture() {
     // Keep the camera live: this is what lets the hologram keep following
     // the drawing as the phone moves, instead of being stuck to one frame.
     setupThreeScene();
-    setWorldMatrix(worldMatrix);
+    setDetectedPose(worldMatrix, qCap);
     await showPhotoOnPlane(item);
     startLiveTracking();
   } else {
@@ -655,6 +784,7 @@ function showFallbackPhoto(item) {
 
 function resetToCapture() {
   stopLiveTracking();
+  havePose = false;
 
   // Remove any previous result (three.js canvas, frozen frame, fallback photo)
   const oldCanvas = container.querySelector("canvas.ar-canvas");
